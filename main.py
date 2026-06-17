@@ -54,7 +54,7 @@ def extract_mesh_data(geom_module, mesh_size):
     elements = np.array([[tag2idx[int(t)] for t in tri] for tri in tri_tags], dtype=np.int32)
 
     fixed_nodes = {}
-    
+
     for target_dim in [1, 2]:
         physical_groups = gmsh.model.getPhysicalGroups(dim=target_dim)
         
@@ -279,6 +279,13 @@ class fem_simulator(QMainWindow):
             Ex_grid = griddata((cx, cy), Ex_centroids, (X, Y), method='linear')
             Ey_grid = griddata((cx, cy), Ey_centroids, (X, Y), method='linear')
 
+            E_mag = np.sqrt(Ex_grid**2 + Ey_grid**2)
+            threshold = np.nanmax(E_mag) * 1e-4
+            
+            # mask out the noise vectors inside the constant-voltage regions
+            Ex_grid[E_mag < threshold] = np.nan
+            Ey_grid[E_mag < threshold] = np.nan
+            
             self.ax.streamplot(
                 X, Y, Ex_grid, Ey_grid, 
                 color="white", 
