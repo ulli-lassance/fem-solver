@@ -53,19 +53,21 @@ def extract_mesh_data(geom_module, mesh_size):
     tri_tags = elemNodeTags.reshape(-1, 3)
     elements = np.array([[tag2idx[int(t)] for t in tri] for tri in tri_tags], dtype=np.int32)
 
-    # get dirichlet boundary conditions from physical groups
     fixed_nodes = {}
-    physical_groups = gmsh.model.getPhysicalGroups(dim=1)
     
-    for dim, group_tag in physical_groups:
-        name = gmsh.model.getPhysicalName(dim, group_tag)
-        if name.startswith("VOLTAGE_"):
-            voltage_val = float(name.split("_")[1])
-            curve_tags = gmsh.model.getEntitiesForPhysicalGroup(1, group_tag)
-            for curve_tag in curve_tags:
-                nTags, _, _ = gmsh.model.mesh.getNodes(1, curve_tag)
-                for nt in nTags:
-                    fixed_nodes[tag2idx[int(nt)]] = voltage_val
+    for target_dim in [1, 2]:
+        physical_groups = gmsh.model.getPhysicalGroups(dim=target_dim)
+        
+        for dim, group_tag in physical_groups:
+            name = gmsh.model.getPhysicalName(dim, group_tag)
+            if name.startswith("VOLTAGE_"):
+                voltage_val = float(name.split("_")[1])
+                
+                entities = gmsh.model.getEntitiesForPhysicalGroup(dim, group_tag)
+                for entity_tag in entities:
+                    nTags, _, _ = gmsh.model.mesh.getNodes(dim, entity_tag, includeBoundary=True)
+                    for nt in nTags:
+                        fixed_nodes[tag2idx[int(nt)]] = voltage_val
 
     if not fixed_nodes:
         raise ValueError("no voltage boundary conditions found.")
@@ -254,8 +256,12 @@ class fem_simulator(QMainWindow):
             self.ax = self.figure.add_subplot(111)
             self.ax.set_aspect("equal")
 
+            v_min, v_max = V.min(), V.max()
+            levels = np.linspace(v_min, v_max + 1e-9, 30)
+
             contour = self.ax.tricontourf(
-                coords[:, 0], coords[:, 1], elements, V, levels=30, cmap="jet"
+                coords[:, 0], coords[:, 1], elements, V, 
+                levels=levels, cmap="jet", extend="both"
             )
 
             self.cbar = self.figure.colorbar(contour, ax=self.ax)

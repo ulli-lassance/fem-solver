@@ -52,41 +52,50 @@ class EasyGeom:
         domain_dimtag = [(2, self.domain_tag)]
         
         if shape_tags:
-            out, _ = gmsh.model.occ.cut(domain_dimtag, shape_tags)
-            final_domain_tags = [t[1] for t in out]
+            out, out_map = gmsh.model.occ.fragment(domain_dimtag, shape_tags)
         else:
-            final_domain_tags = [self.domain_tag]
+            out_map = [[(2, self.domain_tag)]]
             
         gmsh.model.occ.synchronize()
 
-        final_boundaries = gmsh.model.getBoundary([(2, t) for t in final_domain_tags], oriented=False)
-        voltage_groups = defaultdict(list)
+        voltage_groups_2d = defaultdict(list)
+        
+        domain_fragments = [tag for dim, tag in out_map[0]]
+        
+        if shape_tags:
+            for i, shape_info in enumerate(self.shapes):
+                voltage = shape_info[1]
+                shape_fragments = [tag for dim, tag in out_map[i + 1]]
+                voltage_groups_2d[voltage].extend(shape_fragments)
 
-        for c_dim, c_tag in final_boundaries:
-            xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.occ.getBoundingBox(c_dim, c_tag)
-            assigned = False
-            
-            for tag, voltage, bbox in self.shapes:
-                tol = 1e-3  
-
-                if (bbox[0] - tol <= xmin and xmax <= bbox[2] + tol) and \
-                   (bbox[1] - tol <= ymin and ymax <= bbox[3] + tol):
-                    voltage_groups[voltage].append(c_tag)
-                    assigned = True
-                    break 
-
-            if not assigned and self.domain_boundary_voltage is not None:
-                voltage_groups[self.domain_boundary_voltage].append(c_tag)
+        all_surfaces = gmsh.model.getEntities(2)
+        curve_counts = defaultdict(int)
+        
+        for dim, tag in all_surfaces:
+            boundaries = gmsh.model.getBoundary([(dim, tag)], oriented=False)
+            for b_dim, b_tag in boundaries:
+                curve_counts[abs(b_tag)] += 1
+                
+        outer_boundary_curves = [c_tag for c_tag, count in curve_counts.items() if count == 1]
 
         group_id = 1
-        for voltage, curves in voltage_groups.items():
-            if curves:
-                gmsh.model.addPhysicalGroup(1, list(set(curves)), group_id)
-                gmsh.model.setPhysicalName(1, group_id, f"VOLTAGE_{voltage}")
+        
+        if self.domain_boundary_voltage is not None and outer_boundary_curves:
+            gmsh.model.addPhysicalGroup(1, outer_boundary_curves, group_id)
+            gmsh.model.setPhysicalName(1, group_id, f"VOLTAGE_{self.domain_boundary_voltage}")
+            group_id += 1
+
+        for voltage, surfs in voltage_groups_2d.items():
+            if surfs:
+                gmsh.model.addPhysicalGroup(2, list(set(surfs)), group_id)
+                gmsh.model.setPhysicalName(2, group_id, f"VOLTAGE_{voltage}")
                 group_id += 1
                 
-        gmsh.model.addPhysicalGroup(2, final_domain_tags, group_id)
-        gmsh.model.setPhysicalName(2, group_id, "DOMAIN")
+        if domain_fragments:
+            air_only_fragments = [t for t in domain_fragments if not any(t in v_surfs for v_surfs in voltage_groups_2d.values())]
+            if air_only_fragments:
+                gmsh.model.addPhysicalGroup(2, air_only_fragments, group_id)
+                gmsh.model.setPhysicalName(2, group_id, "DOMAIN")
 
         gmsh.option.setNumber("Mesh.MeshSizeMax", mesh_size)
         gmsh.model.mesh.generate(2)
