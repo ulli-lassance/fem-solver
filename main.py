@@ -53,15 +53,8 @@ def extract_mesh_data(geom_module, mesh_size):
         
     tri_tags = elemNodeTags.reshape(-1, 3)
 
-    expanded_elements = []
-
-    for tri in tri_tags:
-        inner_list = []
-        for t in tri:
-            mapped_value = tag2idx[int(t)]
-            inner_list.append(mapped_value)
-        expanded_elements.append(inner_list)
-    elements = np.array(expanded_elements, dtype=np.int32)
+    vectorized_map = np.vectorize(tag2idx.get)
+    elements = vectorized_map(tri_tags).astype(np.int32)
 
     fixed_nodes = {}
 
@@ -165,7 +158,7 @@ def solve_fem(coords, elements, fixed_nodes):
     return V, Ex_centroids, Ey_centroids, cx, cy, elements
 
 
-class fem_simulator(QMainWindow):
+class FemSimulator(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("simple fem solver")
@@ -210,7 +203,7 @@ class fem_simulator(QMainWindow):
         self.toolbar_2d = NavigationToolbar(self.canvas_2d, self.tab_2d)
         layout_2d.addWidget(self.toolbar_2d)
         layout_2d.addWidget(self.canvas_2d)
-        self.tabs.addTab(self.tab_2d, "2d cross-section")
+        self.tabs.addTab(self.tab_2d, "2d geometry")
 
         self.tab_3d = QWidget()
         layout_3d = QVBoxLayout(self.tab_3d)
@@ -295,13 +288,15 @@ class fem_simulator(QMainWindow):
         ax = self.fig_2d.add_subplot(111)
         ax.set_aspect("equal")
 
+        v_min, v_max = V.min(), V.max()
+        levels = np.linspace(v_min, v_max + 1e-9, 30)
 
-        surface_2d = ax.tripcolor(
+        contour = ax.tricontourf(
             coords[:, 0], coords[:, 1], elements, V, 
-            cmap="jet", shading='gouraud'
+            levels=levels, cmap="jet"
         )
 
-        cbar = self.fig_2d.colorbar(surface_2d, ax=ax, shrink=0.7, pad=0.1)
+        cbar = self.fig_2d.colorbar(contour, ax=ax, shrink=0.7, pad=0.1)
         cbar.set_label("electric potential (v)")
 
         ax.triplot(
@@ -368,6 +363,6 @@ class fem_simulator(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    window = fem_simulator()
+    window = FemSimulator()
     window.show()
     sys.exit(app.exec())
