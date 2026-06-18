@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QLabel,
     QDoubleSpinBox,
+    QTabWidget,
 )
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
@@ -51,7 +52,16 @@ def extract_mesh_data(geom_module, mesh_size):
         raise ValueError("no triangle elements found. check your mesh settings.")
         
     tri_tags = elemNodeTags.reshape(-1, 3)
-    elements = np.array([[tag2idx[int(t)] for t in tri] for tri in tri_tags], dtype=np.int32)
+
+    expanded_elements = []
+
+    for tri in tri_tags:
+        inner_list = []
+        for t in tri:
+            mapped_value = tag2idx[int(t)]
+            inner_list.append(mapped_value)
+        expanded_elements.append(inner_list)
+    elements = np.array(expanded_elements, dtype=np.int32)
 
     fixed_nodes = {}
 
@@ -159,7 +169,7 @@ class fem_simulator(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("simple fem solver")
-        self.resize(1000, 800)
+        self.resize(1200, 800)
 
         self.current_file_path = None
 
@@ -191,21 +201,28 @@ class fem_simulator(QMainWindow):
         control_layout.addWidget(self.status_label)
         control_layout.addStretch()
 
-        right_panel_layout = QVBoxLayout()
+        self.tabs = QTabWidget()
         
-        self.figure = Figure()
-        self.canvas = FigureCanvas(self.figure)
-        self.toolbar = NavigationToolbar(self.canvas, self)
-        
-        self.ax = self.figure.add_subplot(111)
-        self.ax.set_aspect("equal")
-        self.ax.set_title("electric potential and field lines")
+        self.tab_2d = QWidget()
+        layout_2d = QVBoxLayout(self.tab_2d)
+        self.fig_2d = Figure()
+        self.canvas_2d = FigureCanvas(self.fig_2d)
+        self.toolbar_2d = NavigationToolbar(self.canvas_2d, self.tab_2d)
+        layout_2d.addWidget(self.toolbar_2d)
+        layout_2d.addWidget(self.canvas_2d)
+        self.tabs.addTab(self.tab_2d, "2d cross-section")
 
-        right_panel_layout.addWidget(self.toolbar)
-        right_panel_layout.addWidget(self.canvas)
+        self.tab_3d = QWidget()
+        layout_3d = QVBoxLayout(self.tab_3d)
+        self.fig_3d = Figure()
+        self.canvas_3d = FigureCanvas(self.fig_3d)
+        self.toolbar_3d = NavigationToolbar(self.canvas_3d, self.tab_3d)
+        layout_3d.addWidget(self.toolbar_3d)
+        layout_3d.addWidget(self.canvas_3d)
+        self.tabs.addTab(self.tab_3d, "3d voltage surface")
 
         layout.addLayout(control_layout, 1)
-        layout.addLayout(right_panel_layout, 4)
+        layout.addWidget(self.tabs, 4)
 
     def load_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -249,53 +266,13 @@ class fem_simulator(QMainWindow):
             V, Ex_centroids, Ey_centroids, cx, cy, elements = solve_fem(coords, elements, fixed_nodes)
             
             # plot the results
-            self.status_label.setText("status: plotting results...")
+            self.status_label.setText("status: plotting 2d and 3d results...")
             QApplication.processEvents()
 
-            self.figure.clear() 
-            self.ax = self.figure.add_subplot(111)
-            self.ax.set_aspect("equal")
+            # call the separated plotting functions
+            self.plot_2d_results(coords, elements, V, Ex_centroids, Ey_centroids, cx, cy, gui_mesh_size)
+            self.plot_3d_results(coords, elements, V)
 
-            v_min, v_max = V.min(), V.max()
-            levels = np.linspace(v_min, v_max + 1e-9, 30)
-
-            contour = self.ax.tricontourf(
-                coords[:, 0], coords[:, 1], elements, V, 
-                levels=levels, cmap="jet", extend="both"
-            )
-
-            self.cbar = self.figure.colorbar(contour, ax=self.ax)
-            self.cbar.set_label("electric potential (v)")
-
-            self.ax.triplot(
-                coords[:, 0], coords[:, 1], elements, 
-                color='black', linewidth=0.5, alpha=0.4
-            )
-
-            x_lin = np.linspace(coords[:, 0].min(), coords[:, 0].max(), 200)
-            y_lin = np.linspace(coords[:, 1].min(), coords[:, 1].max(), 200)
-            X, Y = np.meshgrid(x_lin, y_lin)
-
-            Ex_grid = griddata((cx, cy), Ex_centroids, (X, Y), method='linear')
-            Ey_grid = griddata((cx, cy), Ey_centroids, (X, Y), method='linear')
-
-            E_mag = np.sqrt(Ex_grid**2 + Ey_grid**2)
-            threshold = np.nanmax(E_mag) * 1e-4
-            
-            # mask out the noise vectors inside the constant-voltage regions
-            Ex_grid[E_mag < threshold] = np.nan
-            Ey_grid[E_mag < threshold] = np.nan
-            
-            self.ax.streamplot(
-                X, Y, Ex_grid, Ey_grid, 
-                color="white", 
-                density=1.2, 
-                linewidth=1, 
-                arrowsize=1.2
-            )
-
-            self.ax.set_title(f"equipotentials, mesh (size: {gui_mesh_size:.2f}), and field lines")
-            self.canvas.draw()
             self.status_label.setText("status: done.")
 
         except Exception as e:
@@ -309,6 +286,85 @@ class fem_simulator(QMainWindow):
             
             QMessageBox.critical(self, "error", f"failed to load or solve:\n\n{str(e)}")
             self.status_label.setText("status: error occurred. waiting for valid input...")
+
+    def plot_2d_results(self, coords, elements, V, Ex_centroids, Ey_centroids, cx, cy, mesh_size):
+        """
+        handles drawing the 2d equipotential and field streamplot.
+        """
+        self.fig_2d.clear() 
+        ax = self.fig_2d.add_subplot(111)
+        ax.set_aspect("equal")
+
+
+        surface_2d = ax.tripcolor(
+            coords[:, 0], coords[:, 1], elements, V, 
+            cmap="jet", shading='gouraud'
+        )
+
+        cbar = self.fig_2d.colorbar(surface_2d, ax=ax, shrink=0.7, pad=0.1)
+        cbar.set_label("electric potential (v)")
+
+        ax.triplot(
+            coords[:, 0], coords[:, 1], elements, 
+            color='black', linewidth=0.5, alpha=0.4
+        )
+
+        x_lin = np.linspace(coords[:, 0].min(), coords[:, 0].max(), 200)
+        y_lin = np.linspace(coords[:, 1].min(), coords[:, 1].max(), 200)
+        X, Y = np.meshgrid(x_lin, y_lin)
+
+        Ex_grid = griddata((cx, cy), Ex_centroids, (X, Y), method='linear')
+        Ey_grid = griddata((cx, cy), Ey_centroids, (X, Y), method='linear')
+
+        E_mag = np.sqrt(Ex_grid**2 + Ey_grid**2)
+        threshold = np.nanmax(E_mag) * 1e-4
+        
+        Ex_grid[E_mag < threshold] = np.nan
+        Ey_grid[E_mag < threshold] = np.nan
+        
+        ax.streamplot(
+            X, Y, Ex_grid, Ey_grid, 
+            color="white", 
+            density=1.2, 
+            linewidth=1, 
+            arrowsize=1.2
+        )
+
+        ax.set_title(f"equipotentials, mesh (size: {mesh_size:.2f}), and field lines")
+        self.canvas_2d.draw()
+
+    def plot_3d_results(self, coords, elements, V):
+        """
+        handles drawing the 3d voltage surface.
+        """
+        self.fig_3d.clear()
+        ax = self.fig_3d.add_subplot(111, projection='3d')
+
+        surf = ax.plot_trisurf(
+            coords[:, 0], coords[:, 1], V, 
+            triangles=elements, cmap='jet', linewidth=0.2, edgecolor='black', alpha=0.9
+        )
+
+        x_min, x_max = coords[:, 0].min(), coords[:, 0].max()
+        y_min, y_max = coords[:, 1].min(), coords[:, 1].max()
+        
+        dx = x_max - x_min
+        dy = y_max - y_min
+
+        dz = max(dx, dy) * 0.4 
+        
+        ax.set_box_aspect((dx, dy, dz))
+
+        cbar = self.fig_3d.colorbar(surf, ax=ax, shrink=0.7, pad=0.1)
+        cbar.set_label("electric potential (v)")
+
+        ax.set_title("3d surface plot of electric potential")
+        ax.set_xlabel("x")
+        ax.set_ylabel("y")
+        ax.set_zlabel("voltage (v)")
+        
+        self.canvas_3d.draw()
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
